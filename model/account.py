@@ -18,17 +18,7 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     def _get_partner_ubigeo(self, partner):
         if not partner:
             return ""
-        district = getattr(partner, "l10n_pe_district_id", False)
-        if district:
-            for attr in ("code", "l10n_pe_code", "ubigeo"):
-                val = getattr(district, attr, "")
-                if val:
-                    return str(val).strip()
-        for attr in ("l10n_pe_ubigeo", "ubigeo"):
-            val = getattr(partner, attr, "")
-            if val:
-                return str(val).strip()
-        return ""
+        return partner.zip or ""
 
     def _get_partner_address_line_simple(self, partner):
         parts = [partner.street or "", partner.street2 or "", partner.city or ""]
