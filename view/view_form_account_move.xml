@@ -7,7 +7,7 @@
         <field name="inherit_id" ref="account.view_move_form"/>
         <field name="arch" type="xml">
             <xpath expr="//page[@name='invoice_tab']" position="after">
-                <page name="detraccion_tab" string="Detracción">
+                <page name="detraccion_tab" invisible="l10n_pe_edi_operation_type != '1004'" string="Detracción">
                     <group>
                         <field name="direccion_origen"/>
                         <field name="direccion_destino"/>
