@@ -17,7 +17,6 @@ class AccountMove(models.Model):
 class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     _inherit = "account.edi.xml.ubl_pe"
 
-    # Getter puro: SOLO ZIP
     def _get_partner_ubigeo(self, partner):
         return (partner.zip or "").strip() if partner else ""
 
@@ -64,7 +63,6 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
         }
 
-        # Helper: crea cac:Delivery con cac:Despatch (ORIGEN)
         def make_delivery_origin():
             delivery_el = etree.Element(f"{{{ns['cac']}}}Delivery")
             despatch_el = etree.SubElement(delivery_el, f"{{{ns['cac']}}}Despatch")
@@ -82,7 +80,6 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
 
             return delivery_el
 
-        # Helper: crea cac:Delivery con DeliveryLocation (DESTINO)
         def make_delivery_dest():
             delivery_el = etree.Element(f"{{{ns['cac']}}}Delivery")
             dl_el = etree.SubElement(delivery_el, f"{{{ns['cac']}}}DeliveryLocation")
@@ -97,21 +94,18 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
 
             return delivery_el
 
-        # Insertar dentro de CADA InvoiceLine
         inv_lines = root.findall("cac:InvoiceLine", namespaces=ns)
-        if not inv_lines:
-            # Si no hay líneas, no hacemos nada (pero normalmente siempre hay)
-            new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
-            return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
-
         for line_el in inv_lines:
-            # OJO: para no duplicar si reintentas, borramos deliveries previos con Despatch/DeliveryLocation
-            # (si no quieres borrar, comenta este bloque)
+            # Evitar duplicados
             for d in line_el.findall("cac:Delivery", namespaces=ns):
                 line_el.remove(d)
 
-            line_el.append(make_delivery_origin())
-            line_el.append(make_delivery_dest())
+            # Insertar antes de TaxTotal (posición segura por orden UBL)
+            tax_total = line_el.find("cac:TaxTotal", namespaces=ns)
+            pos = line_el.index(tax_total) if tax_total is not None else len(line_el)
+
+            line_el.insert(pos, make_delivery_origin())
+            line_el.insert(pos + 1, make_delivery_dest())
 
         new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
         return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
