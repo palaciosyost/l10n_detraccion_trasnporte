@@ -16,67 +16,47 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     _inherit = "account.edi.xml.ubl_pe"
 
     def _get_partner_ubigeo(self, partner):
-        if not partner:
-            return ""
-        return partner.zip or ""
+        return (partner.zip or "").strip() if partner else ""
 
-    def _get_partner_address_line_simple(self, partner):
-        parts = [partner.street or "", partner.street2 or "", partner.city or ""]
-        s = " ".join(p.strip() for p in parts if p and p.strip())
-        return s or (partner.name or "-")
+        
+    def _get_invoice_line_vals(self, line):
+        vals = super()._get_invoice_line_vals(line)
+        move = line.move_id
 
-    def _get_invoice_node(self, vals):
-        # 1) que Odoo arme TODO primero
-        document_node = super()._get_invoice_node(vals)
-        invoice = vals["invoice"]
-
-        op_type = str(getattr(invoice, "l10n_pe_edi_operation_type", "") or "")
+        op_type = str(getattr(move, "l10n_pe_edi_operation_type", "") or "")
         if op_type != "1004":
-            return document_node
+            return vals
 
-        origin = invoice.direccion_origen
-        dest = invoice.direccion_destino
+        origin = move.direccion_origen
+        dest = move.direccion_destino
         if not origin or not dest:
             raise UserError(_("Falta Dirección Origen/Destino para detracción 1004."))
 
         ubigeo_origen = self._get_partner_ubigeo(origin)
         ubigeo_destino = self._get_partner_ubigeo(dest)
 
-        _logger.info("[DETRACCION][FINAL] ubigeo_origen=%s ubigeo_destino=%s", ubigeo_origen, ubigeo_destino)
+        _logger.warning("[DETRACCION][LINE] origen=%s destino=%s", ubigeo_origen, ubigeo_destino)
 
         if not ubigeo_origen or not ubigeo_destino:
             raise UserError(_("Origen/Destino sin ubigeo."))
 
-        # 2) REEMPLAZA al final para que quede sí o sí en el XML final
-        document_node["cac:Delivery"] = [
-            # ORIGEN
+        vals["cac:Delivery"] = [
             {
-                "cac:DeliveryLocation": {
-                    "cac:Address": {
+                "cac:Despatch": {
+                    "cbc:Instructions": {"_text": "Flete Primario"},
+                    "cac:DespatchAddress": {
                         "cbc:ID": {"_text": ubigeo_origen},
-                        "cac:AddressLine": {"cbc:Line": {"_text": self._get_partner_address_line_simple(origin)}},
-                        "cac:Country": {"cbc:IdentificationCode": {"_text": "PE"}},
-                    }
-                },
-                "cac:DeliveryTerms": {
-                    "cbc:ID": {"_text": "01"},   # origen
-                    "cbc:Amount": {"_text": self.format_float(invoice.amount_total, 2), "currencyID": invoice.currency_id.name},
-                },
+                        "cac:AddressLine": {"cbc:Line": {"_text": origin.street or origin.name or "-"}},
+                    },
+                }
             },
-            # DESTINO
             {
                 "cac:DeliveryLocation": {
                     "cac:Address": {
                         "cbc:ID": {"_text": ubigeo_destino},
-                        "cac:AddressLine": {"cbc:Line": {"_text": self._get_partner_address_line_simple(dest)}},
-                        "cac:Country": {"cbc:IdentificationCode": {"_text": "PE"}},
+                        "cac:AddressLine": {"cbc:Line": {"_text": dest.street or dest.name or "-"}},
                     }
-                },
-                "cac:DeliveryTerms": {
-                    "cbc:ID": {"_text": "02"},   # destino
-                    "cbc:Amount": {"_text": self.format_float(invoice.amount_total, 2), "currencyID": invoice.currency_id.name},
-                },
+                }
             },
-        ]        
-        _logger.info("[DETRACCION][FINAL] Delivery set OK")
-        return document_node
+        ]
+        return vals
