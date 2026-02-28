@@ -1,4 +1,6 @@
 import logging
+from lxml import etree
+
 from odoo import models, fields, _
 from odoo.exceptions import UserError
 
@@ -13,9 +15,14 @@ class AccountMove(models.Model):
 
 
 class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
+    """
+    Odoo 19: el template UBL bloquea agregar cac:Despatch/DespatchAddress con dict_to_xml.
+    Por eso, aquí post-procesamos el XML ya generado y le inyectamos el bloque requerido
+    por el OSE para detracción de transporte (1004) ANTES de la firma.
+    """
     _inherit = "account.edi.xml.ubl_pe"
 
-    # Getter puro: SOLO ZIP (como pediste)
+    # Getter puro: SOLO ZIP
     def _get_partner_ubigeo(self, partner):
         return (partner.zip or "").strip() if partner else ""
 
@@ -24,80 +31,93 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             return "-"
         return partner.street or partner.name or "-"
 
-    def _add_invoice_header_nodes(self, document_node, vals):
-        super()._add_invoice_header_nodes(document_node, vals)
+    def _export_invoice(self, invoice):
+        """
+        Devuelve (xml_content, errors). Aquí:
+        1) Llamamos al export original
+        2) Si op_type=1004, inyectamos:
+           Invoice/cac:Delivery/cac:Despatch/cac:DespatchAddress/cbc:ID = ubigeo_origen
+        """
+        xml_content, errors = super()._export_invoice(invoice)
 
-        invoice = vals.get("invoice")
-        if not invoice:
-            return
+        try:
+            op_type = str(getattr(invoice, "l10n_pe_edi_operation_type", "") or "")
+            if op_type != "1004":
+                return xml_content, errors
 
-        op_type = str(getattr(invoice, "l10n_pe_edi_operation_type", "") or "")
-        if op_type != "1004":
-            return
+            origin = invoice.direccion_origen
+            dest = invoice.direccion_destino
+            if not origin or not dest:
+                raise UserError(_("Falta Dirección Origen/Destino para detracción 1004."))
 
-        origin = invoice.direccion_origen
-        dest = invoice.direccion_destino
-        if not origin or not dest:
-            raise UserError(_("Falta Dirección Origen/Destino para detracción 1004."))
+            ubigeo_origen = self._get_partner_ubigeo(origin)
+            ubigeo_destino = self._get_partner_ubigeo(dest)
+            if not ubigeo_origen or not ubigeo_destino:
+                raise UserError(_("Origen/Destino sin ubigeo (ZIP)."))
 
-        ubigeo_origen = self._get_partner_ubigeo(origin)
-        ubigeo_destino = self._get_partner_ubigeo(dest)
+            _logger.info(
+                "[DETRACCION][POSTXML] move=%s ubigeo_origen=%s ubigeo_destino=%s",
+                invoice.name, ubigeo_origen, ubigeo_destino
+            )
 
-        _logger.info(
-            "[DETRACCION][HEADER] move=%s ubigeo_origen=%s ubigeo_destino=%s",
-            invoice.name, ubigeo_origen, ubigeo_destino
-        )
+            # --- parse XML ---
+            if isinstance(xml_content, str):
+                xml_bytes = xml_content.encode("utf-8")
+                return_str = True
+            else:
+                xml_bytes = xml_content
+                return_str = False
 
-        if not ubigeo_origen:
-            raise UserError(_("Dirección Origen sin ubigeo (ZIP)."))
-        if not ubigeo_destino:
-            raise UserError(_("Dirección Destino sin ubigeo (ZIP)."))
+            root = etree.fromstring(xml_bytes)
 
-        # ------------------------------------------------------------
-        # Odoo 19 template restrictivo:
-        # NO se puede agregar Despatch ni DeliveryTerms ni Delivery en InvoiceLine.
-        # SÍ se puede asegurar Invoice/cac:Delivery/cac:DeliveryLocation/cac:Address/cbc:ID.
-        #
-        # Para evitar que otro proceso/estructura pise el valor, forzamos
-        # el ORIGEN en TODOS los cac:Delivery existentes en cabecera.
-        # ------------------------------------------------------------
-
-        def _ensure_origin_deliverylocation(delivery_node):
-            delivery_node.setdefault("cac:DeliveryLocation", {})
-            delivery_node["cac:DeliveryLocation"].setdefault("cac:Address", {})
-
-            addr_node = delivery_node["cac:DeliveryLocation"]["cac:Address"]
-
-            # UBIGEO ORIGEN (lo que reclama el OSE)
-            addr_node["cbc:ID"] = {"_text": ubigeo_origen}
-
-            # opcional: línea de dirección y país (solo si el template lo permite, normalmente sí)
-            addr_node.setdefault("cac:AddressLine", {})
-            addr_node["cac:AddressLine"]["cbc:Line"] = {
-                "_text": self._get_partner_address_line_simple(origin)
+            ns = {
+                "inv": "urn:oasis:names:specification:ubl:schema:xsd:Invoice-2",
+                "cac": "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2",
+                "cbc": "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2",
             }
 
-            addr_node.setdefault("cac:Country", {})
-            addr_node["cac:Country"]["cbc:IdentificationCode"] = {"_text": "PE"}
+            # --- construir Delivery/Despatch/DespatchAddress ---
+            delivery_el = etree.Element(f"{{{ns['cac']}}}Delivery")
 
-        delivery = document_node.get("cac:Delivery")
+            despatch_el = etree.SubElement(delivery_el, f"{{{ns['cac']}}}Despatch")
 
-        if isinstance(delivery, list):
-            # Forzar en todos
-            for d in delivery:
-                if isinstance(d, dict):
-                    _ensure_origin_deliverylocation(d)
-            # Mantener como lista
-            document_node["cac:Delivery"] = delivery
+            instr_el = etree.SubElement(despatch_el, f"{{{ns['cbc']}}}Instructions")
+            instr_el.text = "Punto de Origen"
 
-        elif isinstance(delivery, dict):
-            _ensure_origin_deliverylocation(delivery)
-            document_node["cac:Delivery"] = delivery
+            despatch_addr_el = etree.SubElement(despatch_el, f"{{{ns['cac']}}}DespatchAddress")
 
-        else:
-            # Si no existía, lo creamos como dict
-            delivery_node = {}
-            _ensure_origin_deliverylocation(delivery_node)
-            document_node["cac:Delivery"] = delivery_node
+            ub_el = etree.SubElement(despatch_addr_el, f"{{{ns['cbc']}}}ID")
+            ub_el.text = ubigeo_origen
 
-        _logger.info("[DETRACCION][HEADER] Forced ORIGEN in all header cac:Delivery nodes")
+            addr_line_el = etree.SubElement(despatch_addr_el, f"{{{ns['cac']}}}AddressLine")
+            line_el = etree.SubElement(addr_line_el, f"{{{ns['cbc']}}}Line")
+            line_el.text = self._get_partner_address_line_simple(origin)
+
+            # País (muchos OSE lo toleran opcional; lo ponemos)
+            country_el = etree.SubElement(despatch_addr_el, f"{{{ns['cac']}}}Country")
+            cc_el = etree.SubElement(country_el, f"{{{ns['cbc']}}}IdentificationCode")
+            cc_el.text = "PE"
+
+            # --- insertar el bloque en CABECERA ---
+            # Lo insertamos justo después de AccountingCustomerParty si existe; si no, lo agregamos al inicio.
+            customer_node = root.find("cac:AccountingCustomerParty", namespaces=ns)
+            if customer_node is not None:
+                idx = root.index(customer_node)
+                root.insert(idx + 1, delivery_el)
+            else:
+                root.insert(0, delivery_el)
+
+            # --- serializar ---
+            new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
+
+            if return_str:
+                return new_xml_bytes.decode("utf-8"), errors
+            return new_xml_bytes, errors
+
+        except UserError:
+            # UserError debe propagarse
+            raise
+        except Exception as e:
+            # No rompas la facturación por un post-proceso: log y devuelve original
+            _logger.exception("[DETRACCION][POSTXML] Error in post-processing XML: %s", e)
+            return xml_content, errors
