@@ -17,7 +17,7 @@ class AccountMove(models.Model):
 class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     _inherit = "account.edi.xml.ubl_pe"
 
-    # Getter puro: SOLO ZIP
+    # Getter puro: SOLO ZIP (UBIGEO)
     def _get_partner_ubigeo(self, partner):
         return (partner.zip or "").strip() if partner else ""
 
@@ -114,7 +114,7 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
             return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
 
-        # Limpieza: quitar Deliveries anteriores para no duplicar
+        # Limpieza: quitar Deliveries anteriores para evitar duplicados
         for line_el in inv_lines:
             for d in line_el.findall("cac:Delivery", namespaces=ns):
                 line_el.remove(d)
@@ -123,18 +123,23 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             tax_total = line_el.find("cac:TaxTotal", namespaces=ns)
             pos = line_el.index(tax_total) if tax_total is not None else len(line_el)
 
-            # ORIGEN y DESTINO
+            # ORIGEN + DESTINO (si tu OSE lo quiere por línea, se mantiene)
             line_el.insert(pos, make_delivery_origin())
             line_el.insert(pos + 1, make_delivery_dest())
 
-            # SOLO una vez en la primera línea:
+            # Valores referenciales SOLO en la primera línea (para cumplir "uno y solo uno")
             if idx == 0:
-                # 01: Valor referencial del servicio transporte
-                line_el.insert(pos + 2, make_delivery_terms("01", invoice.amount_total, invoice.currency_id.name))
+                total = invoice.amount_total
+                curr = invoice.currency_id.name
 
-                # 02: Valor referencial sobre carga efectiva
-                # (por defecto: mismo monto; si tu OSE pide otro campo, lo ajustamos)
-                line_el.insert(pos + 3, make_delivery_terms("02", invoice.amount_total, invoice.currency_id.name))
+                # 01: Servicio de Transporte
+                line_el.insert(pos + 2, make_delivery_terms("01", total, curr))
+                # 02: Carga Efectiva
+                line_el.insert(pos + 3, make_delivery_terms("02", total, curr))
+                # 03: Carga Útil Nominal  ✅ (lo que te pide 3126)
+                line_el.insert(pos + 4, make_delivery_terms("03", total, curr))
+
+                _logger.info("[DETRACCION] DeliveryTerms 01/02/03 inserted once (line 1).")
 
         new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
         return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
