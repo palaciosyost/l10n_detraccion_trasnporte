@@ -14,64 +14,50 @@ class AccountMove(models.Model):
 
 class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     _inherit = "account.edi.xml.ubl_pe"
-    _description = "PE UBL 2.1 - Detracción Transporte"
 
     def _get_partner_ubigeo(self, partner):
-        """Retorna cualquier valor de ubigeo disponible (string) o ''."""
         if not partner:
             return ""
-
         district = getattr(partner, "l10n_pe_district_id", False)
         if district:
-            # Devuelve lo primero que exista (sin validar longitud)
-            for attr in ("code", "l10n_pe_code", "ubigeo", "name"):
+            for attr in ("code", "l10n_pe_code", "ubigeo"):
                 val = getattr(district, attr, "")
                 if val:
                     return str(val).strip()
-
-        for attr in ("l10n_pe_ubigeo", "ubigeo", "zip"):
+        for attr in ("l10n_pe_ubigeo", "ubigeo"):
             val = getattr(partner, attr, "")
             if val:
                 return str(val).strip()
-
         return ""
 
     def _get_partner_address_line_simple(self, partner):
-        parts = []
-        if partner.street:
-            parts.append(partner.street)
-        if partner.street2:
-            parts.append(partner.street2)
-        if partner.city:
-            parts.append(partner.city)
-        return " ".join(p.strip() for p in parts if p and p.strip()) or (partner.name or "-")
+        parts = [partner.street or "", partner.street2 or "", partner.city or ""]
+        s = " ".join(p.strip() for p in parts if p and p.strip())
+        return s or (partner.name or "-")
 
-    def _add_invoice_header_nodes(self, document_node, vals):
-        super()._add_invoice_header_nodes(document_node, vals)
+    def _get_invoice_node(self, vals):
+        # 1) que Odoo arme TODO primero
+        document_node = super()._get_invoice_node(vals)
         invoice = vals["invoice"]
 
         op_type = str(getattr(invoice, "l10n_pe_edi_operation_type", "") or "")
-        _logger.warning("[DETRACCION] move=%s op_type=%s", invoice.name, op_type)
-
         if op_type != "1004":
-            return
+            return document_node
 
         origin = invoice.direccion_origen
         dest = invoice.direccion_destino
         if not origin or not dest:
-            raise UserError(_("Falta Dirección Origen/Destino en la pestaña Detracción."))
+            raise UserError(_("Falta Dirección Origen/Destino para detracción 1004."))
 
         ubigeo_origen = self._get_partner_ubigeo(origin)
         ubigeo_destino = self._get_partner_ubigeo(dest)
 
-        _logger.warning("[DETRACCION] ubigeo_origen=%s ubigeo_destino=%s", ubigeo_origen, ubigeo_destino)
+        _logger.info("[DETRACCION][FINAL] ubigeo_origen=%s ubigeo_destino=%s", ubigeo_origen, ubigeo_destino)
 
-        # SOLO validar existencia (no formato)
-        if not ubigeo_origen:
-            raise UserError(_("La Dirección Origen no tiene UBIGEO configurado."))
-        if not ubigeo_destino:
-            raise UserError(_("La Dirección Destino no tiene UBIGEO configurado."))
+        if not ubigeo_origen or not ubigeo_destino:
+            raise UserError(_("Origen/Destino sin ubigeo."))
 
+        # 2) REEMPLAZA al final para que quede sí o sí en el XML final
         document_node["cac:Delivery"] = [
             {
                 "cac:Despatch": {
@@ -93,3 +79,5 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
                 }
             },
         ]
+        _logger.info("[DETRACCION][FINAL] Delivery set OK")
+        return document_node
