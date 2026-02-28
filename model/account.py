@@ -49,16 +49,21 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
 
         # 2) REEMPLAZA al final para que quede sí o sí en el XML final
         document_node["cac:Delivery"] = [
+            # ORIGEN
             {
-                "cac:Despatch": {
-                    "cbc:Instructions": {"_text": "Punto de Origen"},
-                    "cac:DespatchAddress": {
+                "cac:DeliveryLocation": {
+                    "cac:Address": {
                         "cbc:ID": {"_text": ubigeo_origen},
                         "cac:AddressLine": {"cbc:Line": {"_text": self._get_partner_address_line_simple(origin)}},
                         "cac:Country": {"cbc:IdentificationCode": {"_text": "PE"}},
-                    },
-                }
+                    }
+                },
+                "cac:DeliveryTerms": {
+                    "cbc:ID": {"_text": "01"},   # origen
+                    "cbc:Amount": {"_text": self.format_float(invoice.amount_total, 2), "currencyID": invoice.currency_id.name},
+                },
             },
+            # DESTINO
             {
                 "cac:DeliveryLocation": {
                     "cac:Address": {
@@ -66,8 +71,12 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
                         "cac:AddressLine": {"cbc:Line": {"_text": self._get_partner_address_line_simple(dest)}},
                         "cac:Country": {"cbc:IdentificationCode": {"_text": "PE"}},
                     }
-                }
+                },
+                "cac:DeliveryTerms": {
+                    "cbc:ID": {"_text": "02"},   # destino
+                    "cbc:Amount": {"_text": self.format_float(invoice.amount_total, 2), "currencyID": invoice.currency_id.name},
+                },
             },
-        ]
+        ]        
         _logger.info("[DETRACCION][FINAL] Delivery set OK")
         return document_node
