@@ -17,7 +17,6 @@ class AccountMove(models.Model):
 class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
     _inherit = "account.edi.xml.ubl_pe"
 
-    # Getter puro: SOLO ZIP (UBIGEO)
     def _get_partner_ubigeo(self, partner):
         return (partner.zip or "").strip() if partner else ""
 
@@ -48,7 +47,6 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             invoice.name, ubigeo_origen, ubigeo_destino
         )
 
-        # Normalizar a bytes
         if isinstance(xml_content, str):
             xml_bytes = xml_content.encode("utf-8")
             return_str = True
@@ -96,17 +94,15 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
 
             return delivery_el
 
-        def make_delivery_terms(code, amount, currency):
+        def make_delivery_terms_container(total, curr):
             delivery_el = etree.Element(f"{{{ns['cac']}}}Delivery")
-            dt_el = etree.SubElement(delivery_el, f"{{{ns['cac']}}}DeliveryTerms")
-
-            id_el = etree.SubElement(dt_el, f"{{{ns['cbc']}}}ID")
-            id_el.text = str(code)
-
-            amt_el = etree.SubElement(dt_el, f"{{{ns['cbc']}}}Amount")
-            amt_el.text = f"{amount:.2f}"
-            amt_el.set("currencyID", currency)
-
+            for code in ("01", "02", "03"):
+                dt_el = etree.SubElement(delivery_el, f"{{{ns['cac']}}}DeliveryTerms")
+                id_el = etree.SubElement(dt_el, f"{{{ns['cbc']}}}ID")
+                id_el.text = code
+                amt_el = etree.SubElement(dt_el, f"{{{ns['cbc']}}}Amount")
+                amt_el.text = f"{total:.2f}"
+                amt_el.set("currencyID", curr)
             return delivery_el
 
         inv_lines = root.findall("cac:InvoiceLine", namespaces=ns)
@@ -114,7 +110,7 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
             return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
 
-        # Limpieza: quitar Deliveries anteriores para evitar duplicados
+        # Limpieza: quitar Deliveries anteriores
         for line_el in inv_lines:
             for d in line_el.findall("cac:Delivery", namespaces=ns):
                 line_el.remove(d)
@@ -123,23 +119,17 @@ class AccountEdiXmlUblPeDetraccion(models.AbstractModel):
             tax_total = line_el.find("cac:TaxTotal", namespaces=ns)
             pos = line_el.index(tax_total) if tax_total is not None else len(line_el)
 
-            # ORIGEN + DESTINO (si tu OSE lo quiere por línea, se mantiene)
+            # ORDEN IGUAL AL XML DE REFERENCIA:
+            # ORIGEN -> (01/02/03) -> DESTINO -> TaxTotal
             line_el.insert(pos, make_delivery_origin())
-            line_el.insert(pos + 1, make_delivery_dest())
 
-            # Valores referenciales SOLO en la primera línea (para cumplir "uno y solo uno")
             if idx == 0:
                 total = invoice.amount_total
                 curr = invoice.currency_id.name
-
-                # 01: Servicio de Transporte
-                line_el.insert(pos + 2, make_delivery_terms("01", total, curr))
-                # 02: Carga Efectiva
-                line_el.insert(pos + 3, make_delivery_terms("02", total, curr))
-                # 03: Carga Útil Nominal  ✅ (lo que te pide 3126)
-                line_el.insert(pos + 4, make_delivery_terms("03", total, curr))
-
-                _logger.info("[DETRACCION] DeliveryTerms 01/02/03 inserted once (line 1).")
+                line_el.insert(pos + 1, make_delivery_terms_container(total, curr))
+                line_el.insert(pos + 2, make_delivery_dest())
+            else:
+                line_el.insert(pos + 1, make_delivery_dest())
 
         new_xml_bytes = etree.tostring(root, encoding="UTF-8", xml_declaration=False)
         return (new_xml_bytes.decode("utf-8"), errors) if return_str else (new_xml_bytes, errors)
